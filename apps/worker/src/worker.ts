@@ -1,6 +1,6 @@
 import path from "path";
 import { NativeConnection, Worker } from "@temporalio/worker";
-// import * as activities from './activities';
+import * as activities from "./activities";
 import { config } from "./config";
 
 async function run() {
@@ -17,7 +17,7 @@ async function run() {
     workflowBundle: {
       codePath: workflowBundlePath,
     },
-    // activities,
+    activities,
   });
 
   console.log(`Worker started on task queue "${config.temporalTaskQueue}"`);

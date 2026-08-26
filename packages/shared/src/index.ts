@@ -6,3 +6,23 @@ export interface ProcessVideoInput {
   inputRelativePath: string;
   outputRelativePath: string;
 }
+
+export interface Resolution {
+  width: number;
+  height: number;
+  bitRate: number;
+  label: string;
+}
+
+export type ProcessingStatus =
+  | "pending"
+  | "processing"
+  | "completed"
+  | "failed";
+
+export const RESOLUTIONS: Resolution[] = [
+  { width: 1920, height: 1080, bitRate: 2000, label: "1080p" },
+  { width: 1280, height: 720, bitRate: 1000, label: "720p" },
+  { width: 960, height: 540, bitRate: 700, label: "480p" },
+  { width: 640, height: 360, bitRate: 400, label: "360p" },
+];
