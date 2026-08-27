@@ -1,8 +1,12 @@
-import express from 'express';
-import cors from 'cors';
-import { config } from './config';
+import express from "express";
+import cors from "cors";
+import { config } from "./config";
+import apiRouter from "./route";
+import { ensureMediaDirectories } from "./lib/media";
 
 const app = express();
+
+ensureMediaDirectories();
 
 app.use(
   cors({
@@ -10,13 +14,25 @@ app.use(
   }),
 );
 
-app.use(express.json());
+app.use("/api", apiRouter);
 
-app.get('/health', (_req, res) => {
+app.use(
+  "/media",
+  express.static(config.mediaRoot, {
+    setHeaders: (res, filePath) => {
+      if (filePath.endsWith(".m3u8")) {
+        res.setHeader("Content-Type", "application/vnd.apple.mpegurl");
+      } else if (filePath.endsWith(".ts")) {
+        res.setHeader("Content-Type", "video/mp2t");
+      }
+    },
+  }),
+);
+app.get("/health", (_req, res) => {
   res.json({
-    status: 'ok',
+    status: "ok",
     mediaRoot: config.mediaRoot,
-    implementation: 'starter',
+    implementation: "starter",
   });
 });
 

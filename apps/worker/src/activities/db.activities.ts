@@ -5,7 +5,7 @@ export async function updateVideoStatus(
   videoId: string,
   processingStatus: ProcessingStatus,
 ) {
-  prisma.video.update({
+  await prisma.video.update({
     where: { videoId },
     data: { processingStatus },
   });

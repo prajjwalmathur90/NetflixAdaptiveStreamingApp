@@ -43,6 +43,8 @@ services:
       - "8080:8080"
 
   worker:
+    env_file:
+      - ../.env
     build:
       context: ..
       dockerfile: apps/worker/Dockerfile
@@ -57,7 +59,7 @@ services:
       FFMPEG_PATH: /usr/bin/ffmpeg
       FFPROBE_PATH: /usr/bin/ffprobe
     volumes:
-      - ${MEDIA_ROOT:-/Users/riyasanket/Developer/netflix-adaptive-stream-media}:/data/media
+      - C:\Users\pra90\Documents\Backend\netflix-adaptive-streaming-app-media:/data/media
     restart: unless-stopped
 
 volumes:

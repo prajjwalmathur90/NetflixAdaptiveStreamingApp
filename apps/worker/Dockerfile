@@ -9,21 +9,21 @@ WORKDIR /app
 
 COPY package.json package-lock.json* ./
 COPY packages/shared/package.json ./packages/shared/
+COPY packages/db/package.json ./packages/db/
 COPY apps/worker/package.json ./apps/worker/
 
 RUN npm install --workspace=@adaptive-streaming/worker --include-workspace-root
 
 COPY packages/shared ./packages/shared
+COPY packages/db ./packages/db
 COPY apps/worker ./apps/worker
 
-RUN npm run build -w @adaptive-streaming/shared
-RUN npm run build -w @adaptive-streaming/worker
+ENV DATABASE_URL=postgresql://postgres:postgres@postgres:5432/adaptive_streaming
 
-# After Lesson 2 (db package), uncomment these lines:
-# COPY packages/db/package.json ./packages/db/
-# COPY packages/db ./packages/db
-# RUN npm run db:generate -w @adaptive-streaming/db
-# RUN npm run build -w @adaptive-streaming/db
+RUN npm exec -w @adaptive-streaming/db -- prisma generate
+RUN npm run build -w @adaptive-streaming/shared
+RUN npm run build -w @adaptive-streaming/db
+RUN npm run build -w @adaptive-streaming/worker
 
 FROM node:20-bookworm-slim AS runner
 
@@ -36,6 +36,7 @@ WORKDIR /app
 
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/packages/shared ./packages/shared
+COPY --from=builder /app/packages/db ./packages/db
 COPY --from=builder /app/apps/worker ./apps/worker
 COPY --from=builder /app/package.json ./package.json
 

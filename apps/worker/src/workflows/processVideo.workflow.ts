@@ -1,6 +1,5 @@
 import { proxyActivities } from "@temporalio/workflow";
 import type * as activities from "../activities";
-import { config } from "../config";
 import { ProcessVideoInput, RESOLUTIONS } from "@adaptive-streaming/shared";
 
 const {
@@ -10,7 +9,7 @@ const {
   updateVideoStatus,
   ensureOutputDirectory,
 } = proxyActivities<typeof activities>({
-  startToCloseTimeout: config.starttoclosetimeout,
+  startToCloseTimeout: "1 hour",
   retry: {
     maximumAttempts: 3,
   },
