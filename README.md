@@ -1,6 +1,6 @@
 # 🎬 Netflix-Style Adaptive Streaming Platform
 
-> An end-to-end **Adaptive Bitrate Streaming (ABR)** platform that replicates how Netflix delivers video. Upload any video file, and the system automatically transcodes it into multiple resolution profiles (1080p → 360p) and serves them via **HLS (HTTP Live Streaming)** — enabling seamless, bandwidth-adaptive playback in the browser.
+> A production-grade **Full-Stack Adaptive Bitrate Streaming (ABR)** platform replicating how modern media architectures (like Netflix) transcode and deliver high-performance video. Upload raw video files, orchestrate distributed multi-bitrate HLS ladder encoding (1080p → 360p) via Temporal workers and FFmpeg, and stream bandwidth-adaptive video directly in the browser with real-time `hls.js` telemetry and custom rendition switching.
 
 ---
 
@@ -8,6 +8,10 @@
 
 - [Architecture Overview](#architecture-overview)
 - [System Design & Data Flow](#system-design--data-flow)
+- [Full-Stack Features](#full-stack-features)
+  - [Frontend Architecture & UI Studio (`apps/web`)](#frontend-architecture--ui-studio-appsweb)
+  - [Backend REST API (`apps/api`)](#backend-rest-api-appsapi)
+  - [Distributed Transcoding Worker (`apps/worker`)](#distributed-transcoding-worker-appsworker)
 - [Monorepo Structure](#monorepo-structure)
 - [Technology Stack](#technology-stack)
 - [Workspace Packages](#workspace-packages)
@@ -22,7 +26,7 @@
 - [Docker Services](#docker-services)
 - [HLS Transcoding Pipeline](#hls-transcoding-pipeline)
 - [API Reference](#api-reference)
-- [Frontend Pages](#frontend-pages)
+- [Frontend Pages & Routing](#frontend-pages--routing)
 - [Configuration Patterns](#configuration-patterns)
 - [Contributing](#contributing)
 - [License](#license)
@@ -49,13 +53,18 @@
                             └─────────────────┘
 ```
 
-The platform follows a **clean monorepo architecture** with three deployable applications backed by two shared internal libraries. The Express API handles uploads and serves processed media, the Temporal worker orchestrates background FFmpeg transcoding, and the React SPA provides the user interface with real-time status polling and adaptive HLS playback.
+The platform is designed as an **end-to-end full-stack monorepo** with three deployable applications backed by two shared internal packages:
+
+1. **`apps/web` (Frontend SPA)** — Production React 19 + Vite frontend engineered with a carbon/obsidian studio aesthetic, live HLS telemetry, manual/auto rendition switching, and byte-accurate upload progress.
+2. **`apps/api` (REST Gateway)** — High-performance Express server handling multi-part file uploads, database queries via Prisma, static HLS segment streaming, and Temporal workflow dispatching.
+3. **`apps/worker` (Processing Engine)** — Distributed Temporal worker executing concurrent FFmpeg transcoding activities into adaptive HLS variants.
+4. **`packages/db` & `packages/shared`** — Unified database client (Prisma 7 + PostgreSQL) and shared type definitions/constants.
 
 ---
 
 ## System Design & Data Flow
 
-The video lifecycle follows a **producer → queue → consumer** pattern, fully orchestrated by Temporal.io for reliability and observability:
+The platform implements an asynchronous **producer → queue → consumer** pattern orchestrated by Temporal.io:
 
 ```
   ┌─────────────────────────────────────────────────────────────────────────┐
@@ -66,11 +75,11 @@ The video lifecycle follows a **producer → queue → consumer** pattern, fully
   ─────────────────────    ─────────────────────   ─────────────────────
   User selects video  ──▶  API saves file to   ──▶ Temporal workflow
   on React frontend       MEDIA_ROOT/uploads/      picks up from queue
-                          Creates DB record         │
-                          (status: "pending")        ├─▶ 1080p (2000 kbps)
-                          Triggers Temporal          ├─▶  720p (1000 kbps)
-                          workflow                   ├─▶  480p  (700 kbps)
-                                                     └─▶  360p  (400 kbps)
+  with byte progress      Creates DB record         │
+                          (status: "pending")        ├─▶ 1080p (4000 kbps)
+                          Triggers Temporal          ├─▶  720p (2500 kbps)
+                          workflow                   ├─▶  520p (1500 kbps)
+                                                     └─▶  360p  (900 kbps)
 
   ④ MASTER PLAYLIST        ⑤ CLEANUP              ⑥ PLAYBACK
   ─────────────────────    ─────────────────────   ─────────────────────
@@ -79,22 +88,68 @@ The video lifecycle follows a **producer → queue → consumer** pattern, fully
   all resolution                                   "completed", hls.js
   variants                 DB updated to           loads master.m3u8 and
                           "completed"              adapts quality to
-                                                    network bandwidth
+                                                   network bandwidth
 ```
 
-### Step-by-step Walkthrough
+### End-to-End Walkthrough
 
-1. **Upload Initiation** — The user selects a video on the React frontend. The file is sent via `multipart/form-data` to `/api/v1/videos/upload`. The Express API saves the file to a shared media volume (`MEDIA_ROOT/uploads/`) using `multer`.
+1. **Ingest & Real-time Progress** — The user drops a video into `apps/web`. An `XMLHttpRequest` tracks byte-accurate upload progress (`0%` to `100%`) directly to `/api/v1/videos/upload`.
+2. **State & Orchestration Trigger** — The API writes a PostgreSQL record (`processingStatus: "pending"`), generates a unique `videoId`, and schedules `processVideoWorkflow` on Temporal's `video-processing` task queue.
+3. **Distributed Transcoding** — The Temporal worker picks up the job. FFmpeg concurrently encodes four HLS renditions (1080p, 720p, 520p, 360p) into 10-second `.ts` segments with resolution-specific playlists.
+4. **Master Manifest Creation** — The worker generates a `master.m3u8` playlist linking all variant playlists and their respective bitrates.
+5. **Storage Cleanup** — The original source file in `MEDIA_ROOT/uploads/` is deleted to save storage, and the DB status updates to `"completed"`.
+6. **Adaptive Streaming** — The frontend automatically transitions from polling to playback. `hls.js` mounts the master manifest, streaming dynamically based on network bandwidth while providing live telemetry.
 
-2. **State & Orchestration Trigger** — The API creates a PostgreSQL record with `processingStatus: "pending"` and triggers a `processVideoWorkflow` on Temporal, passing the `videoId`, `inputRelativePath`, and `outputRelativePath`.
+---
 
-3. **Background Transcoding** — The Temporal worker picks up the task from the `video-processing` queue. FFmpeg concurrently transcodes the video into four resolution profiles, producing `.ts` segments (10s each) and a `playlist.m3u8` per variant.
+## Full-Stack Features
 
-4. **Master Playlist Generation** — A `master.m3u8` is written referencing all resolution-specific playlists, enabling the player to switch quality dynamically based on available bandwidth.
+### Frontend Architecture & UI Studio (`apps/web`)
 
-5. **Cleanup** — The original upload file is deleted to reclaim disk space.
+The web client is built with **React 19**, **Vite 6**, and an engineering-grade custom CSS design system:
 
-6. **Adaptive Playback** — The frontend polls `/api/v1/videos/:videoId` every 3 seconds. Once status is `completed`, `hls.js` streams the video adaptively in the browser.
+- **Clean Architectural Aesthetics** — High-contrast obsidian/carbon palette (`#0B0C0E` base, `#141619` elevated cards, `#262930` borders), cinema red accent (`#E50914`), crisp `4px`/`6px` rectangular corners, and geometric inline SVG icons (zero emojis, zero generic pill shapes, zero purple gradients).
+- **Global Header with API Heartbeat** — Persistent navigation featuring a real-time health indicator polling `GET /health` every 15 seconds to display connection status.
+- **Interactive Video Catalog (`/`)**:
+  - Live metric counters (**Total**, **Completed**, **Processing**, **Pending**, **Failed**) computed strictly from real database records.
+  - Instant debounced search filtering by original filename or `videoId`.
+  - Filter tabs with rectangular indicator bars.
+  - Dual-mode toggle: High-contrast technical card grid vs. dense tabular view.
+  - Live client-side `<video preload="metadata">` poster preview frames for completed videos (zero placeholder images).
+  - One-click UUID copy buttons with visual feedback.
+- **Upload & Transcoding Ingest Studio (`/upload`)**:
+  - Drag-and-drop dropzone supporting any `video/*` format.
+  - Client-side File Inspector reading exact filename, byte-calculated size (KB/MB/GB), MIME type, and last modified timestamp from the browser `File` object.
+  - Target HLS Transcoding Ladder preview reflecting active `.env` bitrates.
+  - Byte-accurate upload progress bar (`0%` → `100%`) powered by native XHR progress events.
+  - Post-upload handoff displaying Temporal `workflowId` and `videoId` with direct links to the stream player.
+- **Adaptive Stream Player & Telemetry Studio (`/stream/:videoId`)**:
+  - **Status Polling State Machine** — Automatically polls video status every 3000ms while `"pending"` or `"processing"`, gracefully halting when `"completed"` or `"failed"`.
+  - **Transcoding Pipeline View** — Shows an active 3-step pipeline progress card (Ingest → Parallel Encoding → Master Playlist Generation) while processing.
+  - **Quality / Rendition Selector** — Allows one-click switching between **Auto (ABR)** and locked manual levels (**1080p**, **720p**, **520p**, **360p**).
+  - **Live Runtime Telemetry** — Synchronized to `hls.js` and HTML5 video events:
+    - Decoded Resolution (`width x height`)
+    - Active Bitrate (`kbps`)
+    - Forward Buffer Length (continuous seconds ahead)
+    - ABR Mode (`Auto` vs `Manual Lock`)
+  - Stream metadata card (Video ID, Manifest path, Renditions, Segment duration).
+  - Graceful 404 Not Found card with return-to-catalog routing.
+- **Legal Compliance Pages (`/privacy` & `/terms`)** — Complete, professionally drafted Privacy Policy and Terms of Service covering uploaded media storage, PostgreSQL metadata retention, Temporal workflow execution data, and FFmpeg resource policies.
+
+### Backend REST API (`apps/api`)
+
+- Express 4.21 server with modular controller/service/repository architecture.
+- Multer disk storage staging uploads into `MEDIA_ROOT/uploads/`.
+- Temporal Client integration initiating asynchronous workflows.
+- Static media streaming endpoint (`/media/...`) with optimized MIME types (`application/vnd.apple.mpegurl` for `.m3u8` and `video/mp2t` for `.ts`).
+- Health check endpoint (`GET /health`) reporting media root accessibility and service status.
+
+### Distributed Transcoding Worker (`apps/worker`)
+
+- Standalone Temporal worker powered by `@temporalio/worker` and `fluent-ffmpeg`.
+- Concurrently encodes all resolution variants in parallel using `Promise.all()`.
+- Dynamic bitrate parameters loaded from `.env` (`BITRATE_1080P`, `BITRATE_720P`, etc.).
+- Robust activity retries with automatic failure recovery.
 
 ---
 
@@ -103,54 +158,70 @@ The video lifecycle follows a **producer → queue → consumer** pattern, fully
 ```
 netflix-adaptive-stream/
 ├── package.json                  # Root — npm workspaces orchestrator
-├── .env / .env.example           # Shared environment variables (single root .env)
+├── .env / .env.example           # Centralized environment variables
 ├── .gitignore
 │
 ├── apps/                         # ── Deployable Applications ──
-│   ├── api/                      # @adaptive-streaming/api
+│   ├── api/                      # @adaptive-streaming/api (Express REST Gateway)
 │   │   └── src/
-│   │       ├── index.ts          #   Express server entrypoint
-│   │       ├── config/           #   Environment-driven config
-│   │       ├── controller/       #   Route handlers (upload, status, list)
+│   │       ├── index.ts          #   Server bootstrap & static media serving
+│   │       ├── config/           #   Environment configuration (override-enabled)
+│   │       ├── controller/       #   Upload, status, and catalog route handlers
 │   │       ├── service/          #   Business logic layer
-│   │       ├── repository/       #   Database access via Prisma
+│   │       ├── repository/       #   Prisma database layer
 │   │       ├── route/            #   Express route definitions
-│   │       ├── middlewares/      #   Multer upload middleware
-│   │       └── lib/              #   Temporal client, media path utils
+│   │       ├── middlewares/      #   Multer file upload handler
+│   │       └── lib/              #   Temporal client & media path utilities
 │   │
-│   ├── web/                      # @adaptive-streaming/web
+│   ├── web/                      # @adaptive-streaming/web (React 19 + Vite Frontend)
+│   │   ├── index.html            #   HTML shell with Inter / JetBrains Mono fonts
+│   │   ├── public/
+│   │   │   └── favicon.svg       #   Monochrome/red geometric SVG favicon
 │   │   └── src/
-│   │       ├── App.tsx           #   React Router root
-│   │       ├── pages/            #   HomePage, UploadPage, StreamPage
-│   │       ├── api/              #   HTTP client functions
-│   │       └── index.css         #   Stylesheet
+│   │       ├── App.tsx           #   Route configuration with persistent Layout
+│   │       ├── index.css         #   Complete carbon/obsidian design system tokens
+│   │       ├── main.tsx          #   Vite entrypoint
+│   │       ├── api/
+│   │       │   └── client.ts     #   API client (XHR upload progress, health, status)
+│   │       ├── config/
+│   │       │   └── site.ts       #   Site title, custom domain, legal contact info
+│   │       ├── components/
+│   │       │   ├── Layout.tsx    #   Persistent header, API status pill, and footer
+│   │       │   ├── Icons.tsx     #   Crisp inline SVG icons (zero emojis)
+│   │       │   └── StatusBadge.tsx # 4px rectangular status badges
+│   │       └── pages/
+│   │           ├── HomePage.tsx  #   Catalog with stats bar, search, filter, card/table
+│   │           ├── UploadPage.tsx#   Ingest studio, file inspector, byte progress bar
+│   │           ├── StreamPage.tsx#   HLS player, rendition switcher, live telemetry
+│   │           ├── PrivacyPage.tsx # Production Privacy Policy
+│   │           └── TermsPage.tsx #   Production Terms of Service
 │   │
-│   └── worker/                   # @adaptive-streaming/worker
-│       ├── Dockerfile            #   Multi-stage Docker build (FFmpeg)
+│   └── worker/                   # @adaptive-streaming/worker (Temporal Worker)
+│       ├── Dockerfile            #   Multi-stage container with FFmpeg & Node.js
+│       ├── scripts/              #   Temporal workflow bundling script
 │       └── src/
-│           ├── worker.ts         #   Temporal worker bootstrap
-│           ├── activities/       #   ffmpeg.activities, db.activities
-│           ├── workflows/        #   processVideo.workflow
-│           ├── config/           #   Worker config
-│           └── lib/              #   DB client, helpers
+│           ├── worker.ts         #   Worker bootstrap & connection to Temporal
+│           ├── activities/       #   ffmpeg.activities (transcode, playlist, cleanup)
+│           ├── workflows/        #   processVideo.workflow (orchestration DAG)
+│           ├── config/           #   Worker config & dynamic bitrate loaders
+│           └── lib/              #   Prisma client & filesystem helpers
 │
 ├── packages/                     # ── Shared Internal Libraries ──
 │   ├── db/                       # @adaptive-streaming/db
 │   │   ├── prisma/
-│   │   │   ├── schema.prisma     #   Data model (Video)
-│   │   │   └── migrations/       #   Migration history
-│   │   ├── prisma.config.ts      #   Prisma 7 TS config
-│   │   └── src/                  #   Generated client exports
+│   │   │   ├── schema.prisma     #   Prisma schema (Video model)
+│   │   │   └── migrations/       #   PostgreSQL migrations
+│   │   └── src/                  #   Generated Prisma client exports
 │   │
 │   └── shared/                   # @adaptive-streaming/shared
-│       └── src/                  #   ProcessVideoInput, Resolution, RESOLUTIONS
+│       └── src/                  #   Resolution profiles, ProcessVideoInput, types
 │
 ├── docker/
-│   ├── docker-compose.yml        # PostgreSQL, Temporal, Temporal UI, Worker
+│   ├── docker-compose.yml        # PostgreSQL 16, Temporal, Temporal UI, Worker
 │   └── temporal/dynamicconfig/   # Temporal dynamic configuration
 │
 └── scripts/
-    └── init-media.ps1            # Creates MEDIA_ROOT/uploads & MEDIA_ROOT/output
+    └── init-media.ps1            # Initializes MEDIA_ROOT/uploads & MEDIA_ROOT/output
 ```
 
 ---
@@ -159,30 +230,29 @@ netflix-adaptive-stream/
 
 | Layer | Technology | Version | Purpose |
 |-------|-----------|---------|---------|
-| **Runtime** | Node.js | ≥ 20 | Server-side JavaScript runtime |
-| **Language** | TypeScript | ^5.7 | End-to-end type safety |
-| **Package Manager** | npm Workspaces | native | Monorepo dependency management |
-| **API Framework** | Express | ^4.21 | REST API server |
-| **Frontend** | React | ^19.0 | Component-based UI |
-| **Bundler** | Vite | ^6.0 | Frontend build tooling (HMR) |
-| **ORM** | Prisma | ^7.0 | Type-safe database access |
-| **Database** | PostgreSQL | 16 (Docker) | Persistent storage |
-| **Workflow Engine** | Temporal.io | ^1.11 | Durable workflow orchestration |
-| **Video Processing** | FFmpeg | via `fluent-ffmpeg` | HLS transcoding & segmenting |
-| **Video Playback** | hls.js | ^1.5 | Browser-side adaptive streaming |
-| **Containerization** | Docker Compose | multi-service | Infrastructure provisioning |
+| **Frontend Framework** | React | ^19.0 | UI components and reactive state |
+| **Frontend Tooling** | Vite | ^6.0 | Fast HMR dev server & production bundling |
+| **Client Routing** | React Router DOM | ^7.1 | Client-side routing with deep link support |
+| **Video Playback** | hls.js | ^1.5 | MediaSource Extensions ABR player & telemetry |
+| **API Framework** | Express | ^4.21 | REST API gateway & static media serving |
+| **Workflow Engine** | Temporal.io | ^1.11 | Durable, fault-tolerant orchestration |
+| **Transcoding Engine** | FFmpeg / ffprobe | via `fluent-ffmpeg` | Multi-bitrate HLS ladder segmentation |
+| **Database ORM** | Prisma | ^7.0 | Type-safe PostgreSQL access |
+| **Database** | PostgreSQL | 16 (Docker) | Relational persistence |
+| **Monorepo Tooling** | npm Workspaces | Native | Clean multi-package management |
+| **Languages** | TypeScript | ^5.7 | End-to-end type safety |
 
 ---
 
 ## Workspace Packages
 
-| Package Path | npm Name | Module Format | Key Dependencies |
-|-------------|----------|---------------|-----------------|
-| `apps/api` | `@adaptive-streaming/api` | CommonJS | express, cors, multer, @temporalio/client, uuid |
-| `apps/web` | `@adaptive-streaming/web` | ESM (Vite) | react 19, react-router-dom 7, hls.js, vite 6 |
-| `apps/worker` | `@adaptive-streaming/worker` | CommonJS | @temporalio/worker, @temporalio/workflow, fluent-ffmpeg |
-| `packages/db` | `@adaptive-streaming/db` | CommonJS | @prisma/client 7, @prisma/adapter-pg, prisma 7 |
-| `packages/shared` | `@adaptive-streaming/shared` | CommonJS | none (dev-only: typescript) |
+| Package Path | npm Name | Module Format | Purpose |
+|-------------|----------|---------------|---------|
+| `apps/api` | `@adaptive-streaming/api` | CommonJS | Express REST gateway & file uploads |
+| `apps/web` | `@adaptive-streaming/web` | ESM (Vite) | React 19 SPA frontend studio |
+| `apps/worker` | `@adaptive-streaming/worker` | CommonJS | Temporal FFmpeg transcoding worker |
+| `packages/db` | `@adaptive-streaming/db` | CommonJS | Prisma 7 client & migrations |
+| `packages/shared` | `@adaptive-streaming/shared` | CommonJS | Shared interfaces & dynamic ladder profiles |
 
 ---
 
@@ -190,21 +260,17 @@ netflix-adaptive-stream/
 
 ```
 apps/api      ──▶  packages/db   ◀──  apps/worker
-    │                                      │
-    └──────▶  packages/shared  ◀───────────┘
+     │                                     │
+     └──────▶  packages/shared  ◀──────────┘
 
-apps/web      (standalone — no internal workspace deps)
-packages/db   (standalone)
-packages/shared (standalone)
+apps/web      (Consumes API via HTTP REST & HLS streaming)
+packages/db   (Standalone library)
+packages/shared (Standalone library)
 ```
-
-All internal dependencies use `"*"` version specifiers in `package.json`.
 
 ---
 
 ## Database Schema
-
-The platform uses a single `Video` model to track the full processing lifecycle:
 
 ```prisma
 model Video {
@@ -220,31 +286,33 @@ model Video {
 }
 ```
 
-**Status transitions:** `pending` → `processing` → `completed` | `failed`
+**Status Lifecycle:** `pending` → `processing` → `completed` | `failed`
 
 ---
 
 ## Environment Variables
 
-All environment variables live in a **single root `.env` file**. Copy from `.env.example` to get started:
+All services load configuration from a **single root `.env` file**:
 
 | Variable | Used By | Default | Description |
 |----------|---------|---------|-------------|
-| `MEDIA_ROOT` | api, worker | `/data/adaptive-streaming-media` | Root path for uploads & processed output |
 | `PORT` | api | `3000` | Express API port |
 | `DATABASE_URL` | api, worker, db | `postgresql://postgres:postgres@localhost:5432/adaptive_streaming` | PostgreSQL connection string |
+| `MEDIA_ROOT` | api, worker | Host-specific path | Directory for `uploads/` and `output/` |
 | `TEMPORAL_ADDRESS` | api, worker | `localhost:7233` | Temporal gRPC endpoint |
-| `TEMPORAL_TASK_QUEUE` | api, worker | `video-processing` | Temporal task queue name |
-| `CORS_ORIGIN` | api | `http://localhost:5173` | Allowed CORS origin |
+| `TEMPORAL_TASK_QUEUE` | api, worker | `video-processing` | Task queue name |
+| `CORS_ORIGIN` | api | `http://localhost:5173` | Allowed frontend origin |
 | `FFMPEG_PATH` | worker | `ffmpeg` | Path to FFmpeg binary |
 | `FFPROBE_PATH` | worker | `ffprobe` | Path to FFprobe binary |
 | `VITE_API_URL` | web | `http://localhost:3000` | API base URL for frontend |
-
-### How Env Loading Works
-
-- **api & worker** — `dotenv-cli` in npm scripts (`dotenv -e ../../.env --`) with a fallback `dotenv.config()` in `src/config/index.ts`.
-- **web** — Vite reads `VITE_`-prefixed vars automatically via `import.meta.env`. The `envDir` in `vite.config.ts` points to the monorepo root.
-- **db** — `prisma.config.ts` uses `dotenv` to manually load `../../.env`.
+| `BITRATE_1080P` | api, worker | `4000` | 1080p target video bitrate (kbps) |
+| `BITRATE_720P` | api, worker | `2500` | 720p target video bitrate (kbps) |
+| `BITRATE_520P` | api, worker | `1500` | 520p target video bitrate (kbps) |
+| `BITRATE_360P` | api, worker | `900` | 360p target video bitrate (kbps) |
+| `VITE_BITRATE_1080P` | web | `4000` | Frontend ladder display for 1080p |
+| `VITE_BITRATE_720P` | web | `2500` | Frontend ladder display for 720p |
+| `VITE_BITRATE_520P` | web | `1500` | Frontend ladder display for 520p |
+| `VITE_BITRATE_360P` | web | `900` | Frontend ladder display for 360p |
 
 ---
 
@@ -252,21 +320,21 @@ All environment variables live in a **single root `.env` file**. Copy from `.env
 
 ### Prerequisites
 
-| Requirement | Minimum Version |
-|-------------|----------------|
-| **Node.js** | 20.x |
-| **npm** | 10.x |
-| **Docker** & **Docker Compose** | Latest stable |
-| **FFmpeg** | Any recent build (for local worker) |
+| Requirement | Minimum Version | Note |
+|-------------|----------------|------|
+| **Node.js** | 20.x | LTS recommended |
+| **npm** | 10.x | Workspaces support |
+| **Docker & Docker Compose** | Latest | Runs PostgreSQL, Temporal, and Temporal UI |
+| **FFmpeg & ffprobe** | 5.x+ | Required for local worker development |
 
 ### Installation
 
 ```bash
 # 1. Clone the repository
-git clone https://github.com/<your-org>/netflix-adaptive-streaming.git
-cd netflix-adaptive-streaming
+git clone https://github.com/prajjwalmathur90/NetflixAdaptiveStreamingApp.git
+cd NetflixAdaptiveStreamingApp
 
-# 2. Copy environment file and fill in values
+# 2. Configure environment file
 cp .env.example .env
 
 # 3. Install all workspace dependencies
@@ -279,103 +347,62 @@ npm install
 # ── Step 1: Start infrastructure (PostgreSQL + Temporal + Temporal UI) ──
 npm run docker:up
 
-# ── Step 2: Initialize the database ──
+# ── Step 2: Initialize Database ──
 npm run db:generate       # Generate Prisma client
-npm run db:migrate        # Run migrations
+npm run db:migrate        # Execute migrations
 
-# ── Step 3: Initialize media directories ──
-npm run init:media        # Creates uploads/ and output/ under MEDIA_ROOT
+# ── Step 3: Run the Full-Stack Applications ──
+# Option A: Start all three applications at once
+npm run dev
 
-# ── Step 4: Start the applications ──
-npm run dev:api           # Express API        → http://localhost:3000
-npm run dev:web           # Vite React frontend → http://localhost:5173
-npm run dev:worker        # Temporal worker     → connects to :7233
+# Option B: Run each in a separate terminal
+npm run dev:api           # Express API         → http://localhost:3000
+npm run dev:web           # Vite React Web SPA  → http://localhost:5173
+npm run dev:worker        # Temporal Worker     → connects to :7233
 ```
 
-> **💡 Tip:** Run all three apps at once with `npm run dev`
+### Service Map
 
-| Service | URL |
-|---------|-----|
-| **Web UI** | [http://localhost:5173](http://localhost:5173) |
-| **API Server** | [http://localhost:3000](http://localhost:3000) |
-| **API Health Check** | [http://localhost:3000/health](http://localhost:3000/health) |
-| **Temporal UI** | [http://localhost:8080](http://localhost:8080) |
-
----
-
-## Key Commands
-
-```bash
-# ── Development ──
-npm run dev               # Start all apps concurrently
-npm run dev:api           # Start API server only
-npm run dev:web           # Start frontend only
-npm run dev:worker        # Start Temporal worker only
-
-# ── Build ──
-npm run build             # Build all workspaces
-
-# ── Database ──
-npm run db:generate       # Regenerate Prisma client
-npm run db:migrate        # Apply pending migrations
-
-# ── Docker ──
-npm run docker:up         # Start Postgres, Temporal, Temporal UI
-npm run docker:down       # Stop all Docker services
-npm run docker:worker     # Build & run worker in Docker container
-
-# ── Media ──
-npm run init:media        # Create upload/output directories
-```
-
----
-
-## Docker Services
-
-| Service | Image | Port | Purpose |
-|---------|-------|------|---------|
-| `postgres` | `postgres:16-alpine` | `5432` | Application database |
-| `temporal` | `temporalio/auto-setup:1.25.2` | `7233` | Durable workflow orchestration (shares Postgres) |
-| `temporal-ui` | `temporalio/ui:2.31.2` | `8080` | Temporal Web dashboard |
-| `worker` | Custom multi-stage Dockerfile | — | Containerized FFmpeg transcoding worker |
-
-The worker Dockerfile uses a **multi-stage build** (`node:20-bookworm-slim`) with FFmpeg installed in both stages — builder for compilation, runner for production execution.
+| Service | Endpoint | Description |
+|---------|----------|-------------|
+| **Web UI** | [http://localhost:5173](http://localhost:5173) | Video Catalog, Upload Studio, Adaptive Player |
+| **API Server** | [http://localhost:3000](http://localhost:3000) | REST API & HLS static media server |
+| **API Health** | [http://localhost:3000/health](http://localhost:3000/health) | API health check & active media root |
+| **Temporal UI** | [http://localhost:8080](http://localhost:8080) | Workflow executions dashboard & event history |
+| **PostgreSQL** | `localhost:5432` | Video metadata database |
 
 ---
 
 ## HLS Transcoding Pipeline
 
-When a video is processed, the worker creates the following output structure:
-
 ```
 $MEDIA_ROOT/output/<videoId>/
-├── master.m3u8                  # Master playlist (references all variants)
+├── master.m3u8                  # Master manifest (references all variants & bitrates)
 ├── 1080p/
-│   ├── playlist.m3u8            # Variant playlist (1920×1080, 2000 kbps)
+│   ├── playlist.m3u8            # Variant playlist (1920x1080 @ 4000 kbps)
 │   ├── segment-00000.ts
-│   ├── segment-00001.ts
 │   └── ...
 ├── 720p/
-│   ├── playlist.m3u8            # Variant playlist (1280×720, 1000 kbps)
+│   ├── playlist.m3u8            # Variant playlist (1280x720 @ 2500 kbps)
 │   └── segment-*.ts
-├── 480p/
-│   ├── playlist.m3u8            # Variant playlist (960×540, 700 kbps)
+├── 520p/
+│   ├── playlist.m3u8            # Variant playlist (924x520 @ 1500 kbps)
 │   └── segment-*.ts
 └── 360p/
-    ├── playlist.m3u8            # Variant playlist (640×360, 400 kbps)
+    ├── playlist.m3u8            # Variant playlist (640x360 @ 900 kbps)
     └── segment-*.ts
 ```
 
-### Resolution Profiles
+### Parameterized Transcoding Ladder
 
-| Label | Resolution | Video Bitrate | Codec | Segment Duration |
-|-------|-----------|---------------|-------|-----------------|
-| **1080p** | 1920 × 1080 | 2000 kbps | H.264 (libx264) + AAC | 10s |
-| **720p** | 1280 × 720 | 1000 kbps | H.264 (libx264) + AAC | 10s |
-| **480p** | 960 × 540 | 700 kbps | H.264 (libx264) + AAC | 10s |
-| **360p** | 640 × 360 | 400 kbps | H.264 (libx264) + AAC | 10s |
+| Profile | Dimensions | Bitrate | Codec | Segment Duration | Playlist Type |
+|---------|------------|---------|-------|------------------|---------------|
+| **1080p** | `1920 x 1080` | 4000 kbps | H.264 (libx264) + AAC | 10s | VOD |
+| **720p** | `1280 x 720` | 2500 kbps | H.264 (libx264) + AAC | 10s | VOD |
+| **520p** | `924 x 520` | 1500 kbps | H.264 (libx264) + AAC | 10s | VOD |
+| **360p** | `640 x 360` | 900 kbps | H.264 (libx264) + AAC | 10s | VOD |
 
-All transcoding runs **concurrently** via `Promise.all()` inside the Temporal workflow for maximum throughput.
+All variants are encoded in parallel using `Promise.all()` for fast turnarounds.
 
 ---
 
@@ -385,85 +412,55 @@ All transcoding runs **concurrently** via `Promise.all()` inside the Temporal wo
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| `POST` | `/api/v1/videos/upload` | Upload a video file (`multipart/form-data`) |
-| `GET` | `/api/v1/videos/:videoId` | Get video status and metadata |
-| `GET` | `/api/v1/videos` | List all videos |
+| `POST` | `/api/v1/videos/upload` | Upload source video (`multipart/form-data`, field: `"video"`) |
+| `GET` | `/api/v1/videos/:videoId` | Get single video status and metadata record |
+| `GET` | `/api/v1/videos` | List all videos in catalog |
 
-### Media Serving
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `GET` | `/media/output/<videoId>/master.m3u8` | Master HLS playlist |
-| `GET` | `/media/output/<videoId>/<label>/playlist.m3u8` | Variant playlist |
-| `GET` | `/media/output/<videoId>/<label>/segment-*.ts` | MPEG-TS segments |
-
-### Health Check
+### Static Media Endpoints
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| `GET` | `/health` | API health status |
+| `GET` | `/media/output/<videoId>/master.m3u8` | Master adaptive HLS manifest |
+| `GET` | `/media/output/<videoId>/<label>/playlist.m3u8` | Rendition variant playlist |
+| `GET` | `/media/output/<videoId>/<label>/segment-*.ts` | 10-second MPEG-TS video chunks |
 
 ---
 
-## Frontend Pages
+## Frontend Pages & Routing
 
-| Route | Component | Description |
-|-------|-----------|-------------|
-| `/` | `HomePage` | Lists all uploaded videos with status indicators |
-| `/upload` | `UploadPage` | File picker and upload form |
-| `/stream/:videoId` | `StreamPage` | Adaptive HLS player with status polling |
-
-The frontend uses **React 19** with **React Router v7** (`BrowserRouter`). The `StreamPage` polls the API every 3 seconds until the video status is `completed` or `failed`, then initializes `hls.js` for adaptive playback.
+| Route | Component | Key Features |
+|-------|-----------|--------------|
+| `/` | `HomePage` | Real-time stats bar, instant search, status filters, grid/table toggle, live `<video>` previews |
+| `/upload` | `UploadPage` | Drag-and-drop dropzone, client-side File inspector, byte-accurate progress bar, target ladder preview |
+| `/stream/:videoId` | `StreamPage` | 3s polling state machine, pipeline tracker, adaptive `hls.js` player, live telemetry, quality selector |
+| `/privacy` | `PrivacyPage` | Self-hosted Privacy Policy detailing media file storage, Postgres records, and log retention |
+| `/terms` | `TermsPage` | Engineering Terms and Conditions for FFmpeg compute usage and media ownership |
 
 ---
 
-## Configuration Patterns
-
-### TypeScript — Backend (api, worker, db, shared)
-
-- **Target:** `ES2022` — **Module:** `commonjs`
-- Output: `./dist`, rootDir: `./src`, strict mode enabled
-- `esModuleInterop: true`
-- Library packages (`db`, `shared`) emit declarations
-
-### TypeScript — Frontend (web)
-
-- **Target:** `ES2022` — **Module:** `ESNext`
-- `moduleResolution: "bundler"` (Vite), `jsx: "react-jsx"`, `noEmit: true`
-- Extra strict: `noUnusedLocals`, `noUnusedParameters`
-
-### Dev Script Pattern (API)
+## Key Commands
 
 ```bash
-dotenv -e ../../.env -- concurrently --kill-others "tsc -w" "nodemon --watch dist dist/index.js"
+# Start all workspace apps in dev mode
+npm run dev
+
+# Start specific applications
+npm run dev:web           # Start frontend only
+npm run dev:api           # Start API only
+npm run dev:worker        # Start local worker only
+
+# Build all packages
+npm run build
+
+# Docker infrastructure management
+npm run docker:up         # Start Postgres, Temporal, Temporal UI, and Worker
+npm run docker:down       # Stop all containers
+npm run docker:worker     # Rebuild and run containerized worker
+
+# Database operations
+npm run db:generate       # Re-generate Prisma Client
+npm run db:migrate        # Apply migrations
 ```
-
-Runs the TypeScript compiler in watch mode alongside nodemon, with `dotenv-cli` loading the root `.env` before spawning child processes.
-
-### Temporal Workflow Pattern
-
-```typescript
-// Workflows use proxyActivities with type-only imports
-import { proxyActivities } from '@temporalio/workflow';
-import type * as activities from '../activities';
-
-const { transcodeResolution, writeMasterPlaylist } =
-  proxyActivities<typeof activities>({
-    startToCloseTimeout: '1 hour',
-    retry: { maximumAttempts: 3 },
-  });
-```
-
-### Naming Conventions
-
-| Element | Convention | Example |
-|---------|-----------|---------|
-| Workspace scope | `@adaptive-streaming/` | `@adaptive-streaming/api` |
-| Activities | `*.activities.ts` | `ffmpeg.activities.ts` |
-| Workflows | `*.workflow.ts` | `processVideo.workflow.ts` |
-| Config | `src/config/index.ts` | per-app config module |
-| Pages | `src/pages/<PageName>.tsx` | `StreamPage.tsx` |
-| API client | `src/api/client.ts` | frontend HTTP functions |
 
 ---
 
@@ -471,7 +468,7 @@ const { transcodeResolution, writeMasterPlaylist } =
 
 1. Fork the repository
 2. Create your feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add amazing feature'`)
+3. Commit your changes (`git commit -m 'feat: Add amazing feature'`)
 4. Push to the branch (`git push origin feature/amazing-feature`)
 5. Open a Pull Request
 
@@ -479,4 +476,4 @@ const { transcodeResolution, writeMasterPlaylist } =
 
 ## License
 
-This project is for educational and portfolio purposes.
+This project is open-source and intended for educational, architectural, and portfolio demonstrations.
