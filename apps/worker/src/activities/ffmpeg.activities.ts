@@ -26,6 +26,15 @@ function resolveMediaPath(relativePath: string): string {
   return resolvedAbsolutePath;
 }
 
+export async function getTranscodingResolutions(): Promise<Resolution[]> {
+  return [
+    { width: 1920, height: 1080, bitRate: config.bitrates["1080p"], label: "1080p" },
+    { width: 1280, height: 720, bitRate: config.bitrates["720p"], label: "720p" },
+    { width: 924, height: 520, bitRate: config.bitrates["520p"], label: "520p" },
+    { width: 640, height: 360, bitRate: config.bitrates["360p"], label: "360p" },
+  ];
+}
+
 export async function transcodeResolution(
   inputRelativePath: string,
   outputRelativePath: string,
@@ -33,6 +42,10 @@ export async function transcodeResolution(
 ) {
   const inputPath = resolveMediaPath(inputRelativePath);
   const outputPath = resolveMediaPath(outputRelativePath);
+
+  const bitRate =
+    config.bitrates[resolution.label as keyof typeof config.bitrates] ||
+    resolution.bitRate;
 
   const variantOutput = `${outputPath}${path.sep}${resolution.label}`;
   const variantPlaylist = `${variantOutput}${path.sep}playlist.m3u8`;
@@ -43,7 +56,7 @@ export async function transcodeResolution(
     ffmpeg(inputPath)
       .outputOptions([
         `-vf scale=${resolution.width}:${resolution.height}`, // scale the video to the resolution
-        `-b:v ${resolution.bitRate}k`, // set the video bitrate
+        `-b:v ${bitRate}k`, // set the video bitrate from .env
         "-codec:v libx264", // use the x264 codec
         "-codec:a aac", // use the aac codec
         "-hls_time 10", // set the hls time to 10 seconds
@@ -52,7 +65,7 @@ export async function transcodeResolution(
       ])
       .output(variantPlaylist)
       .on("end", () => {
-        console.log(`Transcoded ${inputPath} to ${variantPlaylist}`);
+        console.log(`Transcoded ${inputPath} to ${variantPlaylist} (${bitRate}k)`);
         resolve(true);
       })
       .on("error", (err) => {
@@ -62,9 +75,7 @@ export async function transcodeResolution(
       .run();
   });
 
-  // 1080p => width: 1920, height: 1080, bitRate: 1000000
-
-  return `#EXT-X-STREAM-INF:BANDWIDTH=${resolution.bitRate * 1000},RESOLUTION=${resolution.width}x${resolution.height}\n${resolution.label}/playlist.m3u8`;
+  return `#EXT-X-STREAM-INF:BANDWIDTH=${bitRate * 1000},RESOLUTION=${resolution.width}x${resolution.height}\n${resolution.label}/playlist.m3u8`;
 }
 
 export async function writeMasterPlaylist(

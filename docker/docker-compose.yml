@@ -59,7 +59,7 @@ services:
       FFMPEG_PATH: /usr/bin/ffmpeg
       FFPROBE_PATH: /usr/bin/ffprobe
     volumes:
-      - C:\Users\pra90\Documents\Backend\netflix-adaptive-streaming-app-media:/data/media
+      - C:\Users\pra90\Documents\BuildSpace\netflix-adaptive-streaming-app-media:/data/media
     restart: unless-stopped
 
 volumes:

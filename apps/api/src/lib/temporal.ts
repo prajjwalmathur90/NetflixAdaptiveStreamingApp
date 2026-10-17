@@ -1,6 +1,6 @@
 import { Connection, Client } from "@temporalio/client";
 import { config } from "../config";
-import { PROCESS_VIDEO_WORKFLOW } from "@adaptive-streaming/shared";
+import { PROCESS_VIDEO_WORKFLOW, getResolutions } from "@adaptive-streaming/shared";
 
 let client: Client | null = null;
 
@@ -26,10 +26,11 @@ export async function startVideoProcessingWorkflow(
   outputRelativePath: string,
 ) {
   const client = await getTemporalClient();
+  const resolutions = getResolutions();
   const workflow = await client.workflow.start(PROCESS_VIDEO_WORKFLOW, {
     taskQueue: config.temporalTaskQueue,
     workflowId: `process-video-${videoId}`,
-    args: [{ videoId, inputRelativePath, outputRelativePath }],
+    args: [{ videoId, inputRelativePath, outputRelativePath, resolutions }],
   });
 
   return workflow.workflowId;

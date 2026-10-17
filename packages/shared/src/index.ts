@@ -1,17 +1,18 @@
 export const TASK_QUEUE = "video-processing";
 export const PROCESS_VIDEO_WORKFLOW = "processVideoWorkflow";
 
-export interface ProcessVideoInput {
-  videoId: string;
-  inputRelativePath: string;
-  outputRelativePath: string;
-}
-
 export interface Resolution {
   width: number;
   height: number;
   bitRate: number;
   label: string;
+}
+
+export interface ProcessVideoInput {
+  videoId: string;
+  inputRelativePath: string;
+  outputRelativePath: string;
+  resolutions?: Resolution[];
 }
 
 export type ProcessingStatus =
@@ -20,9 +21,26 @@ export type ProcessingStatus =
   | "completed"
   | "failed";
 
-export const RESOLUTIONS: Resolution[] = [
-  { width: 1920, height: 1080, bitRate: 2000, label: "1080p" },
-  { width: 1280, height: 720, bitRate: 1000, label: "720p" },
-  { width: 960, height: 540, bitRate: 700, label: "480p" },
-  { width: 640, height: 360, bitRate: 300, label: "360p" },
-];
+export function getResolutions(): Resolution[] {
+  const b1080 = typeof process !== "undefined" && process.env?.BITRATE_1080P
+    ? Number(process.env.BITRATE_1080P)
+    : 4000;
+  const b720 = typeof process !== "undefined" && process.env?.BITRATE_720P
+    ? Number(process.env.BITRATE_720P)
+    : 2500;
+  const b520 = typeof process !== "undefined" && (process.env?.BITRATE_520P || process.env?.BITRATE_540P || process.env?.BITRATE_480P)
+    ? Number(process.env.BITRATE_520P || process.env.BITRATE_540P || process.env.BITRATE_480P)
+    : 1500;
+  const b360 = typeof process !== "undefined" && process.env?.BITRATE_360P
+    ? Number(process.env.BITRATE_360P)
+    : 900;
+
+  return [
+    { width: 1920, height: 1080, bitRate: b1080, label: "1080p" },
+    { width: 1280, height: 720, bitRate: b720, label: "720p" },
+    { width: 924, height: 520, bitRate: b520, label: "520p" },
+    { width: 640, height: 360, bitRate: b360, label: "360p" },
+  ];
+}
+
+export const RESOLUTIONS: Resolution[] = getResolutions();

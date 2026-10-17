@@ -1,10 +1,8 @@
-const API_URL = import.meta.env.VITE_API_URL || "http://localhost:3000";
+import { siteConfig } from "../config/site";
 
-export type ProcessingStatus =
-  | "pending"
-  | "processing"
-  | "completed"
-  | "failed";
+const API_URL = siteConfig.apiUrl;
+
+export type ProcessingStatus = "pending" | "processing" | "completed" | "failed";
 
 export interface VideoSummary {
   videoId: string;
@@ -25,16 +23,52 @@ export interface UploadResponse {
   };
 }
 
-export async function uploadVideo(file: File): Promise<UploadResponse> {
-  const formData = new FormData();
-  formData.append("video", file);
+export interface HealthStatus {
+  status: string;
+  mediaRoot?: string;
+  implementation?: string;
+}
 
-  const response = await fetch(`${API_URL}/api/v1/videos/upload`, {
-    method: "POST",
-    body: formData,
+export async function checkHealth(): Promise<HealthStatus | null> {
+  try {
+    const response = await fetch(`${API_URL}/health`, { signal: AbortSignal.timeout(3000) });
+    if (!response.ok) return null;
+    return response.json();
+  } catch {
+    return null;
+  }
+}
+
+export async function uploadVideo(
+  file: File,
+  onProgress?: (percent: number) => void,
+): Promise<UploadResponse> {
+  return new Promise((resolve, reject) => {
+    const formData = new FormData();
+    formData.append("video", file);
+
+    const xhr = new XMLHttpRequest();
+
+    xhr.upload.addEventListener("progress", (e) => {
+      if (e.lengthComputable && onProgress) {
+        onProgress(Math.round((e.loaded / e.total) * 100));
+      }
+    });
+
+    xhr.addEventListener("load", () => {
+      try {
+        resolve(JSON.parse(xhr.responseText));
+      } catch {
+        reject(new Error("Invalid response from server"));
+      }
+    });
+
+    xhr.addEventListener("error", () => reject(new Error("Network error during upload")));
+    xhr.addEventListener("abort", () => reject(new Error("Upload aborted")));
+
+    xhr.open("POST", `${API_URL}/api/v1/videos/upload`);
+    xhr.send(formData);
   });
-
-  return response.json();
 }
 
 export async function listVideos(): Promise<VideoSummary[]> {
@@ -43,20 +77,14 @@ export async function listVideos(): Promise<VideoSummary[]> {
   return json.data ?? [];
 }
 
-export async function getVideoStatus(
-  videoId: string,
-): Promise<VideoSummary | null> {
+export async function getVideoStatus(videoId: string): Promise<VideoSummary | null> {
   const response = await fetch(`${API_URL}/api/v1/videos/${videoId}`);
-  if (!response.ok) {
-    return null;
-  }
+  if (!response.ok) return null;
   const json = await response.json();
   return json.data ?? null;
 }
 
 export function getStreamUrl(streamPath: string | null): string | null {
-  if (!streamPath) {
-    return null;
-  }
+  if (!streamPath) return null;
   return `${API_URL}${streamPath}`;
 }
